@@ -6,18 +6,7 @@ AnalogOut out(PTE30); // DAC
 unsigned short pre_filter_buf[8];
 std::list<unsigned short> filtered_in_buf = {};
 
-const int BUFFER_LENGTH = 128;
 const int FIRST_ORDER_INIT_LENGTH = 1;
-
-//
-//void safe_append(unsigned short element, std::list<unsigned short> append_to) {
-//    if (append_to.size() >= BUFFER_LENGTH) {
-//        append_to.pop_front();
-//        append_to.push_back(element);
-//    } else {
-//        append_to.push_back(element);
-//    }
-//}
 
 unsigned short filter(unsigned short to_filter[8]) {
     int sum = 0;
