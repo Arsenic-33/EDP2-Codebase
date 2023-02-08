@@ -1,67 +1,94 @@
 #include <list>
+#include <thread>
 #include "mbed.h"
+
+//Virtual serial port over USB
 AnalogIn in(PTB1); // ADC
 AnalogOut out(PTE30); // DAC
 
 unsigned short pre_filter_buf[8];
-std::list<unsigned short> filtered_in_buf = {};
+unsigned short post_filter_buf[128];
 
-const int FIRST_ORDER_INIT_LENGTH = 1;
+const unsigned short TREND_REMOVAL_INIT_LENGTH = 128;
 
-unsigned short filter(unsigned short to_filter[8]) {
-    int sum = 0;
-    int count = 0;
-    while (count < 8) {
-        sum += to_filter[count];
-        count++;
-    }
-    return sum >> 3;
-}
-
-unsigned short average_list_static_len(std::list<unsigned short> to_avg) {
-    int sum = 0;
-    for (int i: to_avg) {
-        sum += i;
-    }
-    return sum >> 7;
-}
 
 int main() {
-    int count = 0;
+    unsigned char pre_filter_buf_cursor = 0;
+    bool lag_filter_enable = false;
+
+    unsigned char post_filter_buf_head = 0;
+    unsigned char post_filter_buf_tail = 0;
+
+    unsigned short offset = 0;
+    // HT_ _ _ _ _
+    // H_1 T_ _ _ _
+    // H_1 2 T_ _ _
+    // H_1 2 3 T_ _
+    // _ H_2 3 T_ _
+    // _ H_2 3 4 T_5
+
+
     while (true) {
-        unsigned short input = in.read_u16(); // varies from 0 - 65535, 65535 = 3.3V, 0 = 0V.
-        pre_filter_buf[count] = input;
+        unsigned short input = in.read_u16(); // Input from ADC.
 
-        count++;
-        if (count == 8) {
-            // If minimum # of elems in buf, start filtering output.
-            if (filtered_in_buf.size() >= FIRST_ORDER_INIT_LENGTH) {
-                unsigned short filtered_input = filter(pre_filter_buf);
-                filtered_in_buf.push_back(
-                        ((filtered_input >> 2) + (filtered_input >> 1))
-                        + (filtered_in_buf.back())
-                );
+        pre_filter_buf[pre_filter_buf_cursor] = input;
+        pre_filter_buf_cursor++;
+
+        if (pre_filter_buf_cursor == 8) {
+            if (!lag_filter_enable) {
+                printf("Waiting for lag filter.");
+                // Push to tail.
+                post_filter_buf[post_filter_buf_tail] = input;
+                post_filter_buf_tail++;
             } else {
-                filtered_in_buf.push_back(filter(pre_filter_buf));
-            }
-
-
-            // Perform trend removal, otherwise write const val.
-            unsigned short offset = 0;
-            if (filtered_in_buf.size() >= 129) {
-                filtered_in_buf.pop_front();
-                unsigned short trend = average_list_static_len(filtered_in_buf);
-                unsigned short next_out = filtered_in_buf.back();
-
-                if (next_out + offset < trend) {
-                    offset = trend - next_out;
+                printf("Starting Lag Filter\n");
+                // Do bounds-check.
+                if (post_filter_buf_tail >= TREND_REMOVAL_INIT_LENGTH) {
+                    post_filter_buf_tail = 0;
                 }
-                out.write_u16(offset + next_out - trend);
-            } else {
-                out.write_u16(32767);
+                if (post_filter_buf_head >= TREND_REMOVAL_INIT_LENGTH) {
+                    post_filter_buf_head = 0;
+                }
+                if (post_filter_buf_tail == post_filter_buf_head) {
+                    post_filter_buf_head++;
+                }
+
+                // Average last 8 samples
+                unsigned int avg = 0;
+                pre_filter_buf_cursor = 0;
+                while (pre_filter_buf_cursor < 8) {
+                    avg += pre_filter_buf[pre_filter_buf_cursor];
+                    pre_filter_buf_cursor++;
+                }
+
+                avg = avg >> 3; // Cheap division by 8.
+                post_filter_buf[post_filter_buf_tail] = avg;
+                post_filter_buf_tail++;
             }
-            count = 0;
+            printf("Finished Lag Filter.\n");
+            // Only true when buf has 128; Can now do rolling avg.
+            if (post_filter_buf_tail == post_filter_buf_head) {
+                printf("Starting rolling avg.\n");
+                unsigned int avg = 0;
+                unsigned char cursor = 0;
+                while (cursor < TREND_REMOVAL_INIT_LENGTH) {
+                    avg += post_filter_buf[cursor];
+                    cursor++;
+                }
+                avg = avg >> 7; // Cheap division by 128.
+                if (avg > post_filter_buf[post_filter_buf_tail] + offset) {
+                    offset = avg - post_filter_buf[post_filter_buf_tail];
+                }
+
+                printf("%d %d %d %d\n", offset, avg, post_filter_buf_tail, post_filter_buf_head);
+                out.write_u16(post_filter_buf[post_filter_buf_tail] - avg + offset);
+            } else {
+                out.write_u16(32768);
+            }
+
+            lag_filter_enable = true;
+            pre_filter_buf_cursor = 0;
         }
-        ThisThread::sleep_for(2ms);
+        ThisThread::sleep_for(1ms);
     }
 }
