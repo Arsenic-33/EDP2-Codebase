@@ -89,6 +89,6 @@ int main() {
             lag_filter_enable = true;
             pre_filter_buf_cursor = 0;
         }
-        ThisThread::sleep_for(1ms);
+        ThisThread::sleep_for(5ms);
     }
 }
